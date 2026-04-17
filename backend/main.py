@@ -4,8 +4,7 @@ from fastapi.responses import FileResponse
 import shutil
 import os
 from steganography import hide_message, extract_message
-from forensics import full_forensic_report
-
+from forensics import full_analysis
 # Inicializamos la aplicación FastAPI
 app = FastAPI(title="Steganography & Steganalysis API")
 
@@ -91,6 +90,6 @@ async def forensics(
         shutil.copyfileobj(image.file, f)
 
     # Generamos el informe forense
-    report = full_forensic_report(input_path)
+    report = full_analysis(input_path)
 
     return report

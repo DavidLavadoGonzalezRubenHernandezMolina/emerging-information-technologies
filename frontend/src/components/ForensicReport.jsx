@@ -1,8 +1,10 @@
 import { useState, useCallback } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { useDropzone } from "react-dropzone"
-import { Upload, ImageIcon, Search, X, Shield, AlertTriangle, Info } from "lucide-react"
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts"
+import {
+  Upload, ImageIcon, Search, X, Shield,
+  FileWarning, Activity, Info, AlertTriangle, CheckCircle2
+} from "lucide-react"
 
 export default function ForensicReport() {
   const [image, setImage] = useState(null)
@@ -63,36 +65,73 @@ export default function ForensicReport() {
     setError(null)
   }
 
-  const getSuspicionColor = (score) => {
-    if (score >= 0.95) return "text-rose-400"
-    if (score >= 0.75) return "text-orange-400"
-    if (score >= 0.50) return "text-yellow-400"
-    return "text-emerald-400"
+  // --- Escalas alineadas con los umbrales reales del analizador ---
+  // 0.75+  alta probabilidad  -> rojo
+  // 0.45+  sospechosa         -> naranja
+  // 0.20+  anomalías leves    -> amarillo
+  // <0.20  limpia             -> verde
+  const verdictStyle = (score) => {
+    if (score >= 0.75) return {
+      text: "text-rose-400",
+      bg: "bg-rose-500/10 border-rose-500/20",
+      bar: "bg-rose-400",
+      icon: AlertTriangle
+    }
+    if (score >= 0.45) return {
+      text: "text-orange-400",
+      bg: "bg-orange-500/10 border-orange-500/20",
+      bar: "bg-orange-400",
+      icon: FileWarning
+    }
+    if (score >= 0.20) return {
+      text: "text-yellow-400",
+      bg: "bg-yellow-500/10 border-yellow-500/20",
+      bar: "bg-yellow-400",
+      icon: Shield
+    }
+    return {
+      text: "text-emerald-400",
+      bg: "bg-emerald-500/10 border-emerald-500/20",
+      bar: "bg-emerald-400",
+      icon: CheckCircle2
+    }
   }
 
-  const getSuspicionBg = (score) => {
-    if (score >= 0.95) return "bg-rose-500/10 border-rose-500/20"
-    if (score >= 0.75) return "bg-orange-500/10 border-orange-500/20"
-    if (score >= 0.50) return "bg-yellow-500/10 border-yellow-500/20"
-    return "bg-emerald-500/10 border-emerald-500/20"
-  }
-
-  const buildHistogramData = (values) => {
-    if (!values) return []
-    const buckets = Array(16).fill(0)
-    values.forEach(v => {
-      const idx = Math.min(Math.floor(v / 16), 15)
-      buckets[idx]++
-    })
-    return buckets.map((count, i) => ({
-      rango: `${i * 16}`,
-      count
-    }))
+  // Renderiza una métrica individual con barra de progreso
+  const Metric = ({ label, value, description }) => {
+    const pct = Math.max(0, Math.min(1, value)) * 100
+    return (
+      <div className="bg-white/5 rounded-xl p-3">
+        <div className="flex justify-between items-baseline mb-1">
+          <span className="text-gray-400 text-xs">{label}</span>
+          <span className="text-white text-sm font-medium tabular-nums">
+            {value.toFixed(3)}
+          </span>
+        </div>
+        <div className="h-1 bg-white/10 rounded-full overflow-hidden">
+          <motion.div
+            initial={{ width: 0 }}
+            animate={{ width: `${pct}%` }}
+            transition={{ duration: 0.6, ease: "easeOut" }}
+            className={`h-full ${
+              pct >= 75 ? "bg-rose-400" :
+              pct >= 45 ? "bg-orange-400" :
+              pct >= 20 ? "bg-yellow-400" :
+              "bg-emerald-400"
+            }`}
+          />
+        </div>
+        {description && (
+          <p className="text-gray-500 text-xs mt-1.5 leading-snug">{description}</p>
+        )}
+      </div>
+    )
   }
 
   return (
     <div className="space-y-4">
 
+      {/* ---------- Panel de carga ---------- */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
@@ -104,7 +143,9 @@ export default function ForensicReport() {
           </div>
           <div>
             <h2 className="text-lg font-semibold">Análisis Forense</h2>
-            <p className="text-gray-400 text-sm">Inspección profunda de metadatos y estadísticas LSB</p>
+            <p className="text-gray-400 text-sm">
+              Detección multicapa: estructura del archivo y estadística de píxeles
+            </p>
           </div>
         </div>
 
@@ -213,142 +254,207 @@ export default function ForensicReport() {
         </div>
       </motion.div>
 
-      {/* Informe */}
+      {/* ---------- Informe ---------- */}
       <AnimatePresence>
-        {report && (
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -20 }}
-            className="space-y-4"
-          >
+        {report && (() => {
+          const style = verdictStyle(report.final_score)
+          const VerdictIcon = style.icon
+          const fa = report.file_analysis || {}
+          const pa = report.pixel_analysis || {}
 
-            {/* Puntuación de sospecha */}
+          return (
             <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              transition={{ delay: 0.1 }}
-              className={`border rounded-3xl p-6 ${getSuspicionBg(report.lsb_analysis?.suspicion_score)}`}
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              className="space-y-4"
             >
-              <div className="flex items-center gap-3 mb-3">
-                <Shield className={`w-5 h-5 ${getSuspicionColor(report.lsb_analysis?.suspicion_score)}`} />
-                <h3 className={`font-semibold ${getSuspicionColor(report.lsb_analysis?.suspicion_score)}`}>
-                  Veredicto forense
-                </h3>
-              </div>
-              <p className={`text-2xl font-bold mb-1 ${getSuspicionColor(report.lsb_analysis?.suspicion_score)}`}>
-                {report.lsb_analysis?.interpretation}
-              </p>
-              <p className="text-gray-400 text-sm">
-                Puntuación de sospecha: <span className="text-white font-medium">{(report.lsb_analysis?.suspicion_score * 100).toFixed(1)}%</span>
-              </p>
 
-              {/* Barra de progreso */}
-              <div className="mt-4 h-2 bg-white/10 rounded-full overflow-hidden">
-                <motion.div
-                  initial={{ width: 0 }}
-                  animate={{ width: `${report.lsb_analysis?.suspicion_score * 100}%` }}
-                  transition={{ delay: 0.3, duration: 0.8, ease: "easeOut" }}
-                  className={`h-full rounded-full ${
-                    report.lsb_analysis?.suspicion_score >= 0.95 ? "bg-rose-400" :
-                    report.lsb_analysis?.suspicion_score >= 0.75 ? "bg-orange-400" :
-                    report.lsb_analysis?.suspicion_score >= 0.50 ? "bg-yellow-400" :
-                    "bg-emerald-400"
-                  }`}
-                />
-              </div>
-            </motion.div>
-
-            {/* Info básica */}
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              transition={{ delay: 0.2 }}
-              className="bg-white/5 border border-white/10 rounded-3xl p-6"
-            >
-              <div className="flex items-center gap-3 mb-4">
-                <Info className="w-5 h-5 text-gray-400" />
-                <h3 className="font-semibold">Información de la imagen</h3>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                {[
-                  { label: "Archivo", value: report.filename },
-                  { label: "Formato", value: report.format || "PNG" },
-                  { label: "Modo", value: report.mode },
-                  { label: "Dimensiones", value: `${report.size?.width} × ${report.size?.height}px` },
-                  { label: "Píxeles analizados", value: report.lsb_analysis?.total_pixels_analyzed?.toLocaleString() },
-                  { label: "LSB unos / ceros", value: `${report.lsb_analysis?.lsb_ones?.toLocaleString()} / ${report.lsb_analysis?.lsb_zeros?.toLocaleString()}` },
-                ].map((item, i) => (
-                  <motion.div
-                    key={item.label}
-                    initial={{ opacity: 0, x: -10 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    transition={{ delay: 0.3 + i * 0.05 }}
-                    className="bg-white/5 rounded-xl p-3"
-                  >
-                    <p className="text-gray-500 text-xs mb-1">{item.label}</p>
-                    <p className="text-white text-sm font-medium truncate">{item.value}</p>
-                  </motion.div>
-                ))}
-              </div>
-            </motion.div>
-
-            {/* Histograma LSB */}
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              transition={{ delay: 0.3 }}
-              className="bg-white/5 border border-white/10 rounded-3xl p-6"
-            >
-              <div className="flex items-center gap-3 mb-4">
-                <AlertTriangle className="w-5 h-5 text-gray-400" />
-                <h3 className="font-semibold">Distribución canal Rojo (LSB)</h3>
-              </div>
-              <ResponsiveContainer width="100%" height={180}>
-                <BarChart data={buildHistogramData(report.histogram?.R)}>
-                  <XAxis dataKey="rango" tick={{ fill: '#6b7280', fontSize: 10 }} />
-                  <YAxis tick={{ fill: '#6b7280', fontSize: 10 }} />
-                  <Tooltip
-                    contentStyle={{ background: '#111', border: '1px solid #333', borderRadius: '8px' }}
-                    labelStyle={{ color: '#fff' }}
-                    itemStyle={{ color: '#a78bfa' }}
-                  />
-                  <Bar dataKey="count" fill="#7c3aed" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </motion.div>
-
-            {/* EXIF */}
-            {report.exif && Object.keys(report.exif).length > 0 && (
+              {/* Veredicto principal */}
               <motion.div
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
-                transition={{ delay: 0.4 }}
-                className="bg-white/5 border border-white/10 rounded-3xl p-6"
+                transition={{ delay: 0.1 }}
+                className={`border rounded-3xl p-6 ${style.bg}`}
               >
-                <div className="flex items-center gap-3 mb-4">
-                  <Info className="w-5 h-5 text-gray-400" />
-                  <h3 className="font-semibold">Metadatos EXIF</h3>
+                <div className="flex items-center gap-3 mb-3">
+                  <VerdictIcon className={`w-5 h-5 ${style.text}`} />
+                  <h3 className={`font-semibold ${style.text}`}>Veredicto</h3>
                 </div>
-                <div className="space-y-2 max-h-48 overflow-y-auto">
-                  {Object.entries(report.exif).map(([key, value], i) => (
-                    <motion.div
-                      key={key}
-                      initial={{ opacity: 0, x: -10 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      transition={{ delay: 0.4 + i * 0.03 }}
-                      className="flex justify-between items-start gap-4 py-2 border-b border-white/5 last:border-0"
-                    >
-                      <span className="text-gray-400 text-xs shrink-0">{key}</span>
-                      <span className="text-white text-xs text-right truncate max-w-[60%]">{value}</span>
-                    </motion.div>
-                  ))}
+                <p className={`text-2xl font-bold mb-1 ${style.text}`}>
+                  {report.verdict}
+                </p>
+                <p className="text-gray-400 text-sm">
+                  Puntuación final:{" "}
+                  <span className="text-white font-medium">
+                    {(report.final_score * 100).toFixed(1)}%
+                  </span>
+                </p>
+
+                {/* Barra */}
+                <div className="mt-4 h-2 bg-white/10 rounded-full overflow-hidden">
+                  <motion.div
+                    initial={{ width: 0 }}
+                    animate={{ width: `${report.final_score * 100}%` }}
+                    transition={{ delay: 0.3, duration: 0.8, ease: "easeOut" }}
+                    className={`h-full rounded-full ${style.bar}`}
+                  />
                 </div>
               </motion.div>
-            )}
 
-          </motion.div>
-        )}
+              {/* Capa 1: Análisis del archivo */}
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ delay: 0.2 }}
+                className="bg-white/5 border border-white/10 rounded-3xl p-6"
+              >
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-3">
+                    <FileWarning className="w-5 h-5 text-gray-400" />
+                    <h3 className="font-semibold">Capa 1 · Estructura del archivo</h3>
+                  </div>
+                  <span className="text-xs text-gray-500 tabular-nums">
+                    score {fa.file_layer_score?.toFixed(3)}
+                  </span>
+                </div>
+
+                {/* Razones de alerta (si hay) */}
+                {fa.file_layer_reasons?.length > 0 && (
+                  <div className="mb-4 space-y-2">
+                    {fa.file_layer_reasons.map((r, i) => (
+                      <div
+                        key={i}
+                        className="flex items-start gap-2 bg-rose-500/10 border border-rose-500/20 rounded-xl px-3 py-2"
+                      >
+                        <AlertTriangle className="w-4 h-4 text-rose-400 mt-0.5 shrink-0" />
+                        <span className="text-rose-300 text-sm">{r}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="bg-white/5 rounded-xl p-3">
+                    <p className="text-gray-500 text-xs mb-1">Tamaño de archivo</p>
+                    <p className="text-white text-sm font-medium">
+                      {fa.file_size_bytes?.toLocaleString()} B
+                    </p>
+                  </div>
+                  <div className="bg-white/5 rounded-xl p-3">
+                    <p className="text-gray-500 text-xs mb-1">Bytes por píxel</p>
+                    <p className="text-white text-sm font-medium">
+                      {fa.bytes_per_pixel}
+                    </p>
+                  </div>
+                  {"trailing_bytes" in fa && (
+                    <div className="bg-white/5 rounded-xl p-3">
+                      <p className="text-gray-500 text-xs mb-1">Bytes tras EOF</p>
+                      <p className={`text-sm font-medium ${
+                        fa.trailing_bytes > 16 ? "text-rose-400" : "text-white"
+                      }`}>
+                        {fa.trailing_bytes}
+                      </p>
+                    </div>
+                  )}
+                  {"total_chunks" in fa && (
+                    <div className="bg-white/5 rounded-xl p-3">
+                      <p className="text-gray-500 text-xs mb-1">Chunks PNG</p>
+                      <p className="text-white text-sm font-medium">
+                        {fa.total_chunks}
+                        {fa.unknown_chunks?.length > 0 && (
+                          <span className="text-rose-400">
+                            {" "}(+{fa.unknown_chunks.length} raros)
+                          </span>
+                        )}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </motion.div>
+
+              {/* Capa 2: Análisis estadístico */}
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ delay: 0.3 }}
+                className="bg-white/5 border border-white/10 rounded-3xl p-6"
+              >
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-3">
+                    <Activity className="w-5 h-5 text-gray-400" />
+                    <h3 className="font-semibold">Capa 2 · Estadística de píxeles</h3>
+                  </div>
+                  <span className="text-xs text-gray-500 tabular-nums">
+                    score {pa.pixel_layer_score?.toFixed(3)}
+                  </span>
+                </div>
+
+                <div className="space-y-3">
+                  <Metric
+                    label="Chi-square attack"
+                    value={pa.chi_square ?? 0}
+                    description="Westfeld-Pfitzmann. Detecta pares LSB artificialmente equilibrados."
+                  />
+                  <Metric
+                    label="RS analysis"
+                    value={pa.rs_analysis ?? 0}
+                    description="Fridrich-Goljan-Du. Estima longitud relativa del mensaje oculto."
+                  />
+                  <Metric
+                    label="Ruptura de correlación LSB"
+                    value={pa.lsb_spatial_break ?? 0}
+                    description="Compara correlación espacial del LSB vs el segundo bit."
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3 mt-4">
+                  <div className="bg-white/5 rounded-xl p-3">
+                    <p className="text-gray-500 text-xs mb-1">Ratio de unos en LSB</p>
+                    <p className="text-white text-sm font-medium">
+                      {pa.lsb_ratio_ones?.toFixed(4)}
+                    </p>
+                  </div>
+                  <div className="bg-white/5 rounded-xl p-3">
+                    <p className="text-gray-500 text-xs mb-1">Dimensiones</p>
+                    <p className="text-white text-sm font-medium">
+                      {report.size?.width} × {report.size?.height}
+                    </p>
+                  </div>
+                </div>
+              </motion.div>
+
+              {/* EXIF */}
+              {report.exif && Object.keys(report.exif).length > 0 && (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.95 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  transition={{ delay: 0.4 }}
+                  className="bg-white/5 border border-white/10 rounded-3xl p-6"
+                >
+                  <div className="flex items-center gap-3 mb-4">
+                    <Info className="w-5 h-5 text-gray-400" />
+                    <h3 className="font-semibold">Metadatos EXIF</h3>
+                  </div>
+                  <div className="space-y-2 max-h-48 overflow-y-auto">
+                    {Object.entries(report.exif).map(([key, value]) => (
+                      <div
+                        key={key}
+                        className="flex justify-between items-start gap-4 py-2 border-b border-white/5 last:border-0"
+                      >
+                        <span className="text-gray-400 text-xs shrink-0">{key}</span>
+                        <span className="text-white text-xs text-right truncate max-w-[60%]">
+                          {value}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </motion.div>
+              )}
+
+            </motion.div>
+          )
+        })()}
       </AnimatePresence>
 
     </div>
