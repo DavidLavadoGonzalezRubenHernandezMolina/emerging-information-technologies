@@ -21,6 +21,35 @@ warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 
 # ---------------------------------------------------------------------------
+# FIRMAS DE ARCHIVOS (magic bytes) que NO deberían aparecer dentro de una imagen
+# ---------------------------------------------------------------------------
+
+EMBEDDED_SIGNATURES = [
+    # (firma, nombre) — solo firmas suficientemente largas (≥4 bytes)
+    # para minimizar falsos positivos por azar
+    (b"PK\x03\x04", "ZIP / JAR / DOCX / XLSX"),
+    (b"PK\x05\x06", "ZIP (empty archive)"),
+    (b"Rar!\x1a\x07", "RAR"),
+    (b"7z\xbc\xaf\x27\x1c", "7-Zip"),
+    (b"%PDF-", "PDF"),
+    (b"#!/bin/bash", "Script bash"),
+    (b"#!/bin/sh", "Script sh"),
+    (b"#!/usr/bin/env", "Script (shebang env)"),
+    (b"#!/usr/bin/python", "Script Python"),
+    (b"#!/usr/bin/perl", "Script Perl"),
+    (b"<?php", "Código PHP"),
+    (b"<html", "HTML"),
+    (b"<!DOCTYPE", "HTML / XML"),
+    (b"<script", "JavaScript"),
+    (b"\x7fELF", "Ejecutable Linux (ELF)"),
+    (b"\xca\xfe\xba\xbe", "Java class"),
+    (b"-----BEGIN RSA PRIVATE KEY", "Clave privada RSA"),
+    (b"-----BEGIN OPENSSH PRIVATE KEY", "Clave privada SSH"),
+    (b"-----BEGIN CERTIFICATE-----", "Certificado"),
+]
+
+
+# ---------------------------------------------------------------------------
 # CAPA 1: ANÁLISIS DEL ARCHIVO
 # ---------------------------------------------------------------------------
 
@@ -94,6 +123,189 @@ def analyze_jpeg_file(path: str) -> dict:
     return result
 
 
+# ---------------------------------------------------------------------------
+# CAPA B: Magic bytes embebidos
+# ---------------------------------------------------------------------------
+
+def _png_idat_ranges(data: bytes):
+    """Devuelve lista de (start, end) de cada chunk IDAT para excluirlos
+    de la búsqueda de firmas. Los datos comprimidos de IDAT pueden contener
+    cualquier secuencia por azar y producen falsos positivos."""
+    ranges = []
+    if not data.startswith(PNG_SIGNATURE):
+        return ranges
+    offset = len(PNG_SIGNATURE)
+    while offset < len(data) - 8:
+        try:
+            length = struct.unpack(">I", data[offset:offset + 4])[0]
+            chunk_type = data[offset + 4:offset + 8]
+            data_start = offset + 8
+            data_end = data_start + length
+            if chunk_type == b"IDAT":
+                ranges.append((data_start, data_end))
+            if chunk_type == b"IEND":
+                break
+            offset = data_end + 4
+        except Exception:
+            break
+    return ranges
+
+
+def _in_any_range(pos: int, ranges) -> bool:
+    for s, e in ranges:
+        if s <= pos < e:
+            return True
+    return False
+
+
+def search_embedded_signatures(path: str, img_format: str) -> dict:
+    """Busca firmas de archivos conocidos dentro del contenido del fichero.
+    Excluye la cabecera de imagen y, para PNG, los chunks IDAT comprimidos
+    donde pueden aparecer falsos positivos por azar."""
+    with open(path, "rb") as f:
+        data = f.read()
+
+    # Zonas a excluir de la búsqueda
+    excluded_ranges = []
+    if img_format == "PNG":
+        excluded_ranges = _png_idat_ranges(data)
+    # Siempre se excluyen los primeros bytes (cabecera)
+    header_skip = 16
+
+    findings = []
+    for sig, desc in EMBEDDED_SIGNATURES:
+        start = header_skip
+        while True:
+            pos = data.find(sig, start)
+            if pos == -1:
+                break
+            if not _in_any_range(pos, excluded_ranges):
+                findings.append({
+                    "signature": desc,
+                    "offset": pos,
+                    "bytes": sig.hex(),
+                })
+                # Una única aparición por firma basta para demo
+                break
+            start = pos + 1
+
+    return {
+        "embedded_findings": findings,
+        "embedded_count": len(findings),
+    }
+
+
+# ---------------------------------------------------------------------------
+# CAPA C: Cadenas ASCII imprimibles sospechosas
+# ---------------------------------------------------------------------------
+
+# Caracteres ASCII imprimibles: 32 (espacio) a 126 (~), más tab (9), LF (10), CR (13)
+_PRINTABLE_SET = set(range(32, 127)) | {9, 10, 13}
+
+
+def search_printable_strings(path: str, img_format: str,
+                             min_length: int = 30,
+                             max_samples: int = 5) -> dict:
+    """Busca cadenas largas de ASCII imprimible dentro del archivo.
+
+    En una imagen binaria no deberían aparecer cadenas ASCII de 30+
+    caracteres consecutivos fuera de zonas EXIF legítimas.
+    Excluye zonas EXIF conocidas y chunks IDAT (PNG) para evitar falsos
+    positivos.
+    """
+    with open(path, "rb") as f:
+        data = f.read()
+
+    # Zonas a excluir (igual que firmas, más cabecera EXIF si hay)
+    excluded_ranges = []
+    if img_format == "PNG":
+        excluded_ranges = _png_idat_ranges(data)
+    # En JPEG excluimos los segmentos APP (FF E0 .. FF EF) donde suele
+    # ir el EXIF, JFIF, ICC, etc. — son texto legítimo de la cámara.
+    if img_format in ("JPEG", "JPG"):
+        excluded_ranges = _jpeg_app_ranges(data)
+
+    # Escaneo de runs de ASCII imprimible
+    strings_found = []
+    current_start = None
+    current_bytes = bytearray()
+
+    for i, byte in enumerate(data):
+        if byte in _PRINTABLE_SET and not _in_any_range(i, excluded_ranges):
+            if current_start is None:
+                current_start = i
+            current_bytes.append(byte)
+        else:
+            if current_start is not None and len(current_bytes) >= min_length:
+                strings_found.append({
+                    "offset": current_start,
+                    "length": len(current_bytes),
+                    "preview": current_bytes[:80].decode("ascii",
+                                                         errors="replace"),
+                })
+            current_start = None
+            current_bytes = bytearray()
+
+    # Cadena final si el archivo termina en run
+    if current_start is not None and len(current_bytes) >= min_length:
+        strings_found.append({
+            "offset": current_start,
+            "length": len(current_bytes),
+            "preview": current_bytes[:80].decode("ascii", errors="replace"),
+        })
+
+    # Ordenamos por longitud descendente y nos quedamos con las más largas
+    strings_found.sort(key=lambda s: s["length"], reverse=True)
+    samples = strings_found[:max_samples]
+
+    return {
+        "printable_strings_count": len(strings_found),
+        "printable_strings_samples": samples,
+    }
+
+
+def _jpeg_app_ranges(data: bytes):
+    """Zonas APP (EXIF, JFIF, ICC...) de un JPEG que contienen texto legítimo
+    y deben excluirse del escaneo de ASCII."""
+    ranges = []
+    if not data.startswith(b"\xff\xd8"):
+        return ranges
+    i = 2
+    while i < len(data) - 4:
+        if data[i] != 0xFF:
+            i += 1
+            continue
+        marker = data[i + 1]
+        # Start of Scan (FFDA) marca el fin de segmentos, a partir de ahí
+        # ya son datos comprimidos
+        if marker == 0xDA or marker == 0xD9:
+            # Excluimos también los datos comprimidos hasta el final
+            ranges.append((i, len(data)))
+            break
+        # Segmentos APPn (E0-EF) y COM (FE) con longitud
+        if (0xE0 <= marker <= 0xEF) or marker == 0xFE:
+            try:
+                seg_len = struct.unpack(">H", data[i + 2:i + 4])[0]
+                ranges.append((i, i + 2 + seg_len))
+                i += 2 + seg_len
+                continue
+            except Exception:
+                break
+        # Otros segmentos con longitud (DHT, DQT, SOF, etc.)
+        # También los excluimos porque pueden contener secuencias que
+        # parecen ASCII por azar (tablas Huffman, cuantización...).
+        if 0xC0 <= marker <= 0xFE and marker not in (0xD8, 0xD9):
+            try:
+                seg_len = struct.unpack(">H", data[i + 2:i + 4])[0]
+                ranges.append((i, i + 2 + seg_len))
+                i += 2 + seg_len
+                continue
+            except Exception:
+                break
+        i += 1
+    return ranges
+
+
 def analyze_file_layer(path, width, height, img_format):
     size_bytes = os.path.getsize(path)
     pixels = width * height
@@ -109,6 +321,11 @@ def analyze_file_layer(path, width, height, img_format):
         report.update(analyze_png_file(path))
     elif img_format in ("JPEG", "JPG"):
         report.update(analyze_jpeg_file(path))
+
+    # Búsqueda de magic bytes embebidos (aplica a cualquier formato)
+    report.update(search_embedded_signatures(path, img_format))
+    # Búsqueda de cadenas ASCII imprimibles sospechosas
+    report.update(search_printable_strings(path, img_format))
 
     report["size_anomaly"] = False
     if img_format == "PNG" and report["bytes_per_pixel"] > 4.0:
@@ -126,6 +343,25 @@ def analyze_file_layer(path, width, height, img_format):
         file_score = max(file_score, 0.55)
         reasons.append(
             f"Chunks PNG no estándar: {report['unknown_chunks']}"
+        )
+    # Firmas embebidas: alerta muy fuerte
+    if report.get("embedded_count", 0) > 0:
+        file_score = max(file_score, 0.95)
+        found_names = [f["signature"] for f in report["embedded_findings"]]
+        reasons.append(
+            f"Archivos embebidos detectados: {', '.join(found_names)}"
+        )
+    # Cadenas ASCII largas fuera de zonas EXIF = sospechoso
+    n_strings = report.get("printable_strings_count", 0)
+    if n_strings >= 3:
+        file_score = max(file_score, 0.80)
+        reasons.append(
+            f"{n_strings} cadenas ASCII largas fuera de metadatos"
+        )
+    elif n_strings == 1 or n_strings == 2:
+        file_score = max(file_score, 0.55)
+        reasons.append(
+            f"{n_strings} cadena(s) ASCII sospechosa(s) detectada(s)"
         )
     if report.get("size_anomaly"):
         file_score = max(file_score, 0.4)
@@ -260,6 +496,106 @@ def lsb_spatial_break(channel: np.ndarray) -> float:
     return float((0.50 - ratio) / 0.45)
 
 
+# ---------------------------------------------------------------------------
+# CAPA D: Correlación LSB local por bloques
+# ---------------------------------------------------------------------------
+
+def _block_lsb_correlation(block_lsb: np.ndarray) -> float:
+    """Correlación espacial horizontal promedio del LSB de un bloque.
+    Imagen natural: ~0.10-0.20. Mensaje cifrado embebido: ~0.
+    """
+    if block_lsb.shape[1] < 2:
+        return 0.0
+    left = block_lsb[:, :-1].flatten().astype(np.float32)
+    right = block_lsb[:, 1:].flatten().astype(np.float32)
+    if left.std() < 1e-9 or right.std() < 1e-9:
+        return 0.0
+    c = np.corrcoef(left, right)[0, 1]
+    if np.isnan(c):
+        return 0.0
+    return float(c)
+
+
+def local_entropy_anomaly(channel: np.ndarray,
+                          block_size: int = 32) -> dict:
+    """
+    Divide el canal en bloques y mide la correlación espacial del LSB
+    en cada bloque.
+
+    En un bloque natural la correlación LSB ronda 0.10-0.20 porque los
+    píxeles vecinos comparten estructura (aunque sea en ruido).
+    En un bloque con mensaje cifrado embebido la correlación cae a ~0
+    porque los LSBs pasan a ser pseudoaleatorios.
+
+    Un bloque es "sospechoso" cuando su correlación cae muy por debajo
+    de la mediana de toda la imagen.
+    """
+    h, w = channel.shape
+    if h < block_size * 2 or w < block_size * 2:
+        return {"suspicious_blocks": 0,
+                "total_blocks": 0,
+                "median_correlation": 0.0,
+                "min_correlation": 0.0,
+                "suspicion": 0.0}
+
+    lsb = (channel & 1).astype(np.uint8)
+
+    corrs = []
+    for y in range(0, h - block_size + 1, block_size):
+        for x in range(0, w - block_size + 1, block_size):
+            block = lsb[y:y + block_size, x:x + block_size]
+            corrs.append(_block_lsb_correlation(block))
+
+    corrs = np.array(corrs)
+    if corrs.size == 0:
+        return {"suspicious_blocks": 0,
+                "total_blocks": 0,
+                "median_correlation": 0.0,
+                "min_correlation": 0.0,
+                "suspicion": 0.0}
+
+    median_c = float(np.median(corrs))
+    min_c = float(np.min(corrs))
+    p75 = float(np.percentile(corrs, 75))
+
+    # Caso 1: toda la imagen tiene correlación LSB baja (LSB_FULL o imagen
+    # casi plana). Este caso lo cogen otras capas (chi², SPC), no es trabajo
+    # de esta métrica.
+    if p75 < 0.05:
+        return {"suspicious_blocks": 0,
+                "total_blocks": int(corrs.size),
+                "median_correlation": round(median_c, 4),
+                "min_correlation": round(min_c, 4),
+                "suspicion": 0.0}
+
+    # Caso 2: la imagen en general tiene correlación normal (p75 >= 0.05)
+    # pero hay bloques con correlación cercana a 0 (consistente con datos
+    # aleatorios localizados). El umbral absoluto es 0.02.
+    suspicious = int(np.sum(corrs < 0.02))
+    total = int(corrs.size)
+    frac = suspicious / total if total else 0.0
+
+    # Esperamos que una imagen natural tenga pocos bloques con corr<0.02.
+    # Mapeo a sospecha:
+    #   <2% de bloques raros  -> 0.0 (ruido normal en zonas uniformes)
+    #   5% bloques raros      -> 0.5
+    #   >12% bloques raros    -> 1.0
+    if frac <= 0.02:
+        suspicion = 0.0
+    elif frac >= 0.12:
+        suspicion = 1.0
+    else:
+        suspicion = (frac - 0.02) / 0.10
+
+    return {
+        "suspicious_blocks": suspicious,
+        "total_blocks": total,
+        "median_correlation": round(median_c, 4),
+        "min_correlation": round(min_c, 4),
+        "suspicion": round(float(suspicion), 4),
+    }
+
+
 def analyze_pixel_layer(image_path: str) -> dict:
     img = Image.open(image_path).convert("RGB")
     pixels = np.array(img)
@@ -269,14 +605,21 @@ def analyze_pixel_layer(image_path: str) -> dict:
     rs = float(np.mean([rs_analysis(c) for c in (r, g, b)]))
     spc = float(np.mean([lsb_spatial_break(c) for c in (r, g, b)]))
 
+    # Capa D: métrica informativa de correlación LSB local por bloques.
+    # No participa en el score final porque los bloques de 32×32 en
+    # imágenes naturales son demasiado ruidosos para dar una señal fiable;
+    # queda expuesta para inspección manual.
+    entropy_r = local_entropy_anomaly(r)
+    ent_blocks_total = entropy_r["total_blocks"]
+    ent_blocks_susp = entropy_r["suspicious_blocks"]
+    ent_median_corr = entropy_r["median_correlation"]
+
     # Combinación equilibrada: media ponderada.
     weighted = rs * 0.40 + spc * 0.40 + chi * 0.20
 
-    # Un único indicador muy fuerte ya debería alertar, aunque otros callen
-    # (el mensaje cifrado rompe unos indicadores pero no siempre todos).
+    # Un único indicador muy fuerte ya debería alertar, aunque otros callen.
     strongest = max(rs, spc, chi)
 
-    # Tomamos el mayor entre la media ponderada y el 0.7 × el más fuerte.
     pixel_score = max(weighted, strongest * 0.70)
     pixel_score = float(np.clip(pixel_score, 0.0, 1.0))
 
@@ -287,6 +630,9 @@ def analyze_pixel_layer(image_path: str) -> dict:
         "chi_square": round(chi, 4),
         "rs_analysis": round(rs, 4),
         "lsb_spatial_break": round(spc, 4),
+        "local_blocks_low_correlation": ent_blocks_susp,
+        "local_blocks_total": ent_blocks_total,
+        "local_median_correlation": ent_median_corr,
         "lsb_ratio_ones": round(ratio_ones, 4),
         "pixel_layer_score": round(pixel_score, 4),
     }

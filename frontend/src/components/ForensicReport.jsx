@@ -2,8 +2,8 @@ import { useState, useCallback } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { useDropzone } from "react-dropzone"
 import {
-  Upload, ImageIcon, Search, X, Shield,
-  FileWarning, Activity, Info, AlertTriangle, CheckCircle2
+  Upload, ImageIcon, Search, X, Shield, FileWarning,
+  Activity, Info, AlertTriangle, CheckCircle2, FileCode, Type
 } from "lucide-react"
 
 export default function ForensicReport() {
@@ -34,21 +34,16 @@ export default function ForensicReport() {
       setError("Necesitas seleccionar una imagen")
       return
     }
-
     setLoading(true)
     setError(null)
-
     try {
       const formData = new FormData()
       formData.append("image", image)
-
       const response = await fetch("http://localhost:8000/forensics", {
         method: "POST",
         body: formData
       })
-
       if (!response.ok) throw new Error("Error al analizar la imagen")
-
       const data = await response.json()
       setReport(data)
     } catch (err) {
@@ -65,11 +60,6 @@ export default function ForensicReport() {
     setError(null)
   }
 
-  // --- Escalas alineadas con los umbrales reales del analizador ---
-  // 0.75+  alta probabilidad  -> rojo
-  // 0.45+  sospechosa         -> naranja
-  // 0.20+  anomalías leves    -> amarillo
-  // <0.20  limpia             -> verde
   const verdictStyle = (score) => {
     if (score >= 0.75) return {
       text: "text-rose-400",
@@ -97,7 +87,6 @@ export default function ForensicReport() {
     }
   }
 
-  // Renderiza una métrica individual con barra de progreso
   const Metric = ({ label, value, description }) => {
     const pct = Math.max(0, Math.min(1, value)) * 100
     return (
@@ -131,7 +120,7 @@ export default function ForensicReport() {
   return (
     <div className="space-y-4">
 
-      {/* ---------- Panel de carga ---------- */}
+      {/* Panel de carga */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
@@ -144,12 +133,11 @@ export default function ForensicReport() {
           <div>
             <h2 className="text-lg font-semibold">Análisis Forense</h2>
             <p className="text-gray-400 text-sm">
-              Detección multicapa: estructura del archivo y estadística de píxeles
+              Detección multicapa: estructura, firmas, cadenas y estadística
             </p>
           </div>
         </div>
 
-        {/* Dropzone */}
         <div
           {...getRootProps()}
           className={`relative border-2 border-dashed rounded-2xl p-8 text-center cursor-pointer transition-all duration-300 ${
@@ -169,26 +157,13 @@ export default function ForensicReport() {
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.95 }}
               >
-                <img
-                  src={preview}
-                  alt="Preview"
-                  className="max-h-48 mx-auto rounded-xl object-contain"
-                />
+                <img src={preview} alt="Preview" className="max-h-48 mx-auto rounded-xl object-contain" />
                 <p className="text-gray-400 text-sm mt-3">{image?.name}</p>
               </motion.div>
             ) : (
-              <motion.div
-                key="upload"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-              >
+              <motion.div key="upload" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
                 <div className="w-12 h-12 rounded-2xl bg-white/5 flex items-center justify-center mx-auto mb-3">
-                  {isDragActive ? (
-                    <ImageIcon className="w-6 h-6 text-rose-400" />
-                  ) : (
-                    <Upload className="w-6 h-6 text-gray-400" />
-                  )}
+                  {isDragActive ? <ImageIcon className="w-6 h-6 text-rose-400" /> : <Upload className="w-6 h-6 text-gray-400" />}
                 </div>
                 <p className="text-gray-300 font-medium">
                   {isDragActive ? "Suelta la imagen aquí" : "Arrastra una imagen o haz clic"}
@@ -199,7 +174,6 @@ export default function ForensicReport() {
           </AnimatePresence>
         </div>
 
-        {/* Error */}
         <AnimatePresence>
           {error && (
             <motion.div
@@ -213,7 +187,6 @@ export default function ForensicReport() {
           )}
         </AnimatePresence>
 
-        {/* Botones */}
         <div className="flex gap-3 mt-5">
           <motion.button
             onClick={handleSubmit}
@@ -254,13 +227,15 @@ export default function ForensicReport() {
         </div>
       </motion.div>
 
-      {/* ---------- Informe ---------- */}
+      {/* Informe */}
       <AnimatePresence>
         {report && (() => {
           const style = verdictStyle(report.final_score)
           const VerdictIcon = style.icon
           const fa = report.file_analysis || {}
           const pa = report.pixel_analysis || {}
+          const embedded = fa.embedded_findings || []
+          const asciiStrings = fa.printable_strings_samples || []
 
           return (
             <motion.div
@@ -281,17 +256,13 @@ export default function ForensicReport() {
                   <VerdictIcon className={`w-5 h-5 ${style.text}`} />
                   <h3 className={`font-semibold ${style.text}`}>Veredicto</h3>
                 </div>
-                <p className={`text-2xl font-bold mb-1 ${style.text}`}>
-                  {report.verdict}
-                </p>
+                <p className={`text-2xl font-bold mb-1 ${style.text}`}>{report.verdict}</p>
                 <p className="text-gray-400 text-sm">
                   Puntuación final:{" "}
                   <span className="text-white font-medium">
                     {(report.final_score * 100).toFixed(1)}%
                   </span>
                 </p>
-
-                {/* Barra */}
                 <div className="mt-4 h-2 bg-white/10 rounded-full overflow-hidden">
                   <motion.div
                     initial={{ width: 0 }}
@@ -301,6 +272,75 @@ export default function ForensicReport() {
                   />
                 </div>
               </motion.div>
+
+              {/* Archivos embebidos detectados (Capa B) */}
+              {embedded.length > 0 && (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.95 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  transition={{ delay: 0.15 }}
+                  className="bg-rose-500/10 border border-rose-500/30 rounded-3xl p-6"
+                >
+                  <div className="flex items-center gap-3 mb-4">
+                    <FileCode className="w-5 h-5 text-rose-400" />
+                    <h3 className="font-semibold text-rose-400">
+                      Archivos embebidos detectados
+                    </h3>
+                  </div>
+                  <div className="space-y-2">
+                    {embedded.map((item, i) => (
+                      <div key={i} className="bg-rose-500/10 rounded-xl p-3 border border-rose-500/20">
+                        <div className="flex justify-between items-center">
+                          <span className="text-rose-300 font-medium text-sm">
+                            {item.signature}
+                          </span>
+                          <span className="text-rose-400/70 text-xs tabular-nums">
+                            offset {item.offset}
+                          </span>
+                        </div>
+                        <p className="text-rose-400/50 text-xs mt-1 font-mono">
+                          magic bytes: {item.bytes}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </motion.div>
+              )}
+
+              {/* Cadenas ASCII sospechosas (Capa C) */}
+              {asciiStrings.length > 0 && (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.95 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  transition={{ delay: 0.17 }}
+                  className="bg-orange-500/10 border border-orange-500/30 rounded-3xl p-6"
+                >
+                  <div className="flex items-center gap-3 mb-4">
+                    <Type className="w-5 h-5 text-orange-400" />
+                    <h3 className="font-semibold text-orange-400">
+                      Cadenas de texto detectadas
+                    </h3>
+                  </div>
+                  <div className="space-y-2">
+                    {asciiStrings.map((s, i) => (
+                      <div key={i} className="bg-orange-500/10 rounded-xl p-3 border border-orange-500/20">
+                        <div className="flex justify-between items-center mb-1">
+                          <span className="text-orange-400/70 text-xs tabular-nums">
+                            offset {s.offset}
+                          </span>
+                          <span className="text-orange-400/70 text-xs">
+                            {s.length} bytes
+                          </span>
+                        </div>
+                        <p className="text-orange-300 text-xs font-mono break-all leading-relaxed">
+                          {s.preview}
+                          {s.length > 80 && "..."}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </motion.div>
+              )}
 
               {/* Capa 1: Análisis del archivo */}
               <motion.div
@@ -319,14 +359,10 @@ export default function ForensicReport() {
                   </span>
                 </div>
 
-                {/* Razones de alerta (si hay) */}
                 {fa.file_layer_reasons?.length > 0 && (
                   <div className="mb-4 space-y-2">
                     {fa.file_layer_reasons.map((r, i) => (
-                      <div
-                        key={i}
-                        className="flex items-start gap-2 bg-rose-500/10 border border-rose-500/20 rounded-xl px-3 py-2"
-                      >
+                      <div key={i} className="flex items-start gap-2 bg-rose-500/10 border border-rose-500/20 rounded-xl px-3 py-2">
                         <AlertTriangle className="w-4 h-4 text-rose-400 mt-0.5 shrink-0" />
                         <span className="text-rose-300 text-sm">{r}</span>
                       </div>
@@ -343,29 +379,35 @@ export default function ForensicReport() {
                   </div>
                   <div className="bg-white/5 rounded-xl p-3">
                     <p className="text-gray-500 text-xs mb-1">Bytes por píxel</p>
-                    <p className="text-white text-sm font-medium">
-                      {fa.bytes_per_pixel}
-                    </p>
+                    <p className="text-white text-sm font-medium">{fa.bytes_per_pixel}</p>
                   </div>
                   {"trailing_bytes" in fa && (
                     <div className="bg-white/5 rounded-xl p-3">
                       <p className="text-gray-500 text-xs mb-1">Bytes tras EOF</p>
-                      <p className={`text-sm font-medium ${
-                        fa.trailing_bytes > 16 ? "text-rose-400" : "text-white"
-                      }`}>
+                      <p className={`text-sm font-medium ${fa.trailing_bytes > 16 ? "text-rose-400" : "text-white"}`}>
                         {fa.trailing_bytes}
                       </p>
                     </div>
                   )}
+                  <div className="bg-white/5 rounded-xl p-3">
+                    <p className="text-gray-500 text-xs mb-1">Firmas embebidas</p>
+                    <p className={`text-sm font-medium ${fa.embedded_count > 0 ? "text-rose-400" : "text-white"}`}>
+                      {fa.embedded_count ?? 0}
+                    </p>
+                  </div>
+                  <div className="bg-white/5 rounded-xl p-3">
+                    <p className="text-gray-500 text-xs mb-1">Cadenas ASCII raras</p>
+                    <p className={`text-sm font-medium ${fa.printable_strings_count > 0 ? "text-orange-400" : "text-white"}`}>
+                      {fa.printable_strings_count ?? 0}
+                    </p>
+                  </div>
                   {"total_chunks" in fa && (
                     <div className="bg-white/5 rounded-xl p-3">
                       <p className="text-gray-500 text-xs mb-1">Chunks PNG</p>
                       <p className="text-white text-sm font-medium">
                         {fa.total_chunks}
                         {fa.unknown_chunks?.length > 0 && (
-                          <span className="text-rose-400">
-                            {" "}(+{fa.unknown_chunks.length} raros)
-                          </span>
+                          <span className="text-rose-400"> (+{fa.unknown_chunks.length} raros)</span>
                         )}
                       </p>
                     </div>
@@ -399,7 +441,7 @@ export default function ForensicReport() {
                   <Metric
                     label="RS analysis"
                     value={pa.rs_analysis ?? 0}
-                    description="Fridrich-Goljan-Du. Estima longitud relativa del mensaje oculto."
+                    description="Fridrich-Goljan-Du. Estima la longitud relativa del mensaje oculto."
                   />
                   <Metric
                     label="Ruptura de correlación LSB"
@@ -421,6 +463,18 @@ export default function ForensicReport() {
                       {report.size?.width} × {report.size?.height}
                     </p>
                   </div>
+                  <div className="bg-white/5 rounded-xl p-3">
+                    <p className="text-gray-500 text-xs mb-1">Bloques 32×32 baja correlación</p>
+                    <p className="text-white text-sm font-medium tabular-nums">
+                      {pa.local_blocks_low_correlation ?? 0} / {pa.local_blocks_total ?? 0}
+                    </p>
+                  </div>
+                  <div className="bg-white/5 rounded-xl p-3">
+                    <p className="text-gray-500 text-xs mb-1">Correlación mediana LSB</p>
+                    <p className="text-white text-sm font-medium">
+                      {pa.local_median_correlation?.toFixed(4)}
+                    </p>
+                  </div>
                 </div>
               </motion.div>
 
@@ -438,14 +492,9 @@ export default function ForensicReport() {
                   </div>
                   <div className="space-y-2 max-h-48 overflow-y-auto">
                     {Object.entries(report.exif).map(([key, value]) => (
-                      <div
-                        key={key}
-                        className="flex justify-between items-start gap-4 py-2 border-b border-white/5 last:border-0"
-                      >
+                      <div key={key} className="flex justify-between items-start gap-4 py-2 border-b border-white/5 last:border-0">
                         <span className="text-gray-400 text-xs shrink-0">{key}</span>
-                        <span className="text-white text-xs text-right truncate max-w-[60%]">
-                          {value}
-                        </span>
+                        <span className="text-white text-xs text-right truncate max-w-[60%]">{value}</span>
                       </div>
                     ))}
                   </div>
